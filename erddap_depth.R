@@ -16,8 +16,6 @@ library(raster)
 library(rgdal)
 
 
-
-
 #  Load the full stat area dataset from ADF&G
 #  https://soa-adfg.opendata.arcgis.com/datasets/groundfish-statistical-areas-2001?geometry=-222.188%2C53.09%2C-79.981%2C67.923
 stat <- readOGR(dsn="Data",layer="Groundfish_Statistical_Areas_2001")
@@ -90,10 +88,10 @@ dataneg %>%
   summarise(mean(depthmean))
 
 rm(temp,junk)
+
 #--------------------------------------------------------------------------------------------
 #####  Now do the same thing with positive longitudes #####
 #--------------------------------------------------------------------------------------------
-
 
 #  Extract bathymetry for the negative longitude regions of Alaskan waters
 getNOAA.bathy(lon1=166,lon2=180,lat1=46,lat2=61, resolution=1) -> AKBath
@@ -149,10 +147,13 @@ datapos <- poslon@data %>%
   dplyr::select(STAT_AREA,index) %>% 
   left_join(junk)
 
+#  There are two stat areas that are broken into two polygons in the ADFG stat area file. 
+#  Find the average depth and average standard deviation of depth across these and combine into one record.
 depthdata <- bind_rows(datapos,dataneg) %>% 
   group_by(STAT_AREA) %>% 
   summarise(m.depth=mean(depthmean),
             sd.depth=sqrt(sum(depthsd^2)/n()))
+
 
 saveRDS(depthdata,file="Depth_by_STAT_AREA.rds")
 
