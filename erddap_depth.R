@@ -151,9 +151,8 @@ depthdata <- bind_rows(datapos,dataneg) %>%
   summarise(m.depth=mean(depthmean),
             sd.depth=sqrt(sum(depthsd^2)/n()))
 
+#  Save just the depth and stat area file
 saveRDS(depthdata,file="Depth_by_STAT_AREA.rds")
-
-#data <- readRDS("Data/mur_SST_stat6_grid.RDS")
 
 #  Join depth and more spatially aggregated management areas (e.g., NMFS areas, GOA groundfish assessment areas, etc) to the full dataset. 
 state <- readOGR(dsn="Data",layer="Groundfish_Statistical_Areas_2001")
