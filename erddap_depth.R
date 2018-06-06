@@ -6,15 +6,12 @@
 #  Created by: Jordan Watson jordan.watson@noaa.gov
 #-------------------------------------------------------------------------------------------------------------------------------
 
-
-
 library(tidyverse)
 library(marmap)
 library(ncdf4)
 library(RCurl)
 library(raster)
 library(rgdal)
-
 
 #  Load the full stat area dataset from ADF&G
 #  https://soa-adfg.opendata.arcgis.com/datasets/groundfish-statistical-areas-2001?geometry=-222.188%2C53.09%2C-79.981%2C67.923
@@ -154,8 +151,25 @@ depthdata <- bind_rows(datapos,dataneg) %>%
   summarise(m.depth=mean(depthmean),
             sd.depth=sqrt(sum(depthsd^2)/n()))
 
-
 saveRDS(depthdata,file="Depth_by_STAT_AREA.rds")
 
+#data <- readRDS("Data/mur_SST_stat6_grid.RDS")
 
-data <- readRDS("Data/mur_SST_stat6_grid.RDS")
+#  Join depth and more spatially aggregated management areas (e.g., NMFS areas, GOA groundfish assessment areas, etc) to the full dataset. 
+state <- readOGR(dsn="Data",layer="Groundfish_Statistical_Areas_2001")
+stat <- state@data %>% 
+  select(STAT_AREA,
+         FMP_AREA_C,
+         IFQ_SABLEF,
+         NMFSAREA=NMFS_REP_1,
+         STATEFED=WATERS_COD) %>% 
+  mutate(STAT_AREA=as.character(STAT_AREA),
+         NMFSAREA=as.character(NMFSAREA),
+         GOA=ifelse(NMFSAREA%in%c("640","650"),"EGOA",
+                    ifelse(NMFSAREA%in%c("620","630"),"CGOA",
+                           ifelse(NMFSAREA%in%c("610"),"WGOA",NA)))) %>% 
+  inner_join(readRDS("Data/mur_SST_stat6_grid.RDS")) %>% 
+  inner_join(depthdata) 
+
+
+saveRDS(stat,file="Data/mur_SST_stat6_all_columns.rds")
