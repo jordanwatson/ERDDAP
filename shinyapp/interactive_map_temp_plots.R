@@ -28,7 +28,6 @@ ui <- fluidPage(
 )
 server <- shinyServer(function(input, output) {
   data <- reactiveValues(clickedShape=NULL)
-
     # produce the basic leaflet map
   output$map <- renderLeaflet(
     leaflet(simple) %>% 
@@ -41,8 +40,8 @@ server <- shinyServer(function(input, output) {
   )
 
     observeEvent(input$map_shape_click, { # update the location selectInput on map clicks
-    data$clickedMarker <- input$map_shape_click
-    print(data$clickedMarker)
+    data$clickedShape <- input$map_shape_click
+    print(data$clickedShape)
   })
     
     #output$myTable <- renderTable({
@@ -50,8 +49,9 @@ server <- shinyServer(function(input, output) {
   # observe the marker click info and print to console when it is changed.
 #})
     output$mainplot <- renderPlot({
+      req(data$clickedShape$id)
       dataset <- mydata %>% 
-        filter(STAT_AREA==data$clickedMarker$id)
+        filter(STAT_AREA==data$clickedShape$id)
       
       p <- ggplot(dataset, aes(x = date, y = sst.mean)) +
         geom_line() +
