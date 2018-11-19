@@ -114,3 +114,77 @@ myout2 %>%
   geom_polygon(aes(x,y,group=cluster,color=factor(date)),fill=NA)
 
 
+#---------------------------------------------------------------------
+library(ncdf4)
+library(RCurl)
+head(myoutdf)
+
+i=1
+tempdat <- myoutdf %>% filter(date==mydates[i]) %>% 
+  filter(minlon>(-180) & maxlon>(-180)) 
+tempdat2 <- tempdat %>% 
+  filter(minlon>(-180) & maxlon>(-180)) %>% 
+  summarise(minlat=min(minlat),
+         maxlat=max(maxlat),
+         minlon=min(minlon),
+         maxlon=max(maxlon))
+
+## The following takes about 140 seconds. 
+system.time({
+  x <- getBinaryURL(paste0("https://coastwatch.pfeg.noaa.gov/erddap/griddap/jplMURSST41.nc?analysed_sst[(",
+                         mydates[i],
+                         "T09:00:00Z):1:(",
+                         mydates[i],
+                         "T09:00:00Z)][(",
+                         tempdat2$minlat,
+                         "):(",
+                         tempdat2$maxlat,
+                         ")][(",
+                         tempdat2$minlon,
+                         "):(",
+                         tempdat2$maxlon,
+                         ")]"))
+
+#  Convert and open the netcdf file
+tmpSST <- tempfile(pattern="xwB", fileext=".nc")
+writeBin(object=x, con=tmpSST)
+nc <- nc_open(tmpSST)
+
+tempneg <- expand.grid(lon=ncvar_get(nc, varid = "longitude"),
+                         lat=ncvar_get(nc, varid = "latitude")) %>% 
+                         {bind_cols(.,data.frame(sst=as.vector(ncvar_get(nc,"analysed_sst"))))} %>% 
+    mutate(sst=ifelse(sst<(-2),NA,sst))
+})
+
+
+#  Takes approximately 40 seconds. 
+negdf <- data.frame()
+system.time({
+  for(j in 1:nrow(tempdat)){
+  x <- getBinaryURL(paste0("https://coastwatch.pfeg.noaa.gov/erddap/griddap/jplMURSST41.nc?analysed_sst[(",
+                           mydates[i],
+                           "T09:00:00Z):1:(",
+                           mydates[i],
+                           "T09:00:00Z)][(",
+                           tempdat$minlat[j],
+                           "):(",
+                           tempdat$maxlat[j],
+                           ")][(",
+                           tempdat$minlon[j],
+                           "):(",
+                           tempdat$maxlon[j],
+                           ")]"))
+  
+  #  Convert and open the netcdf file
+  tmpSST <- tempfile(pattern="xwB", fileext=".nc")
+  writeBin(object=x, con=tmpSST)
+  nc <- nc_open(tmpSST)
+  
+  tempneg <- expand.grid(lon=ncvar_get(nc, varid = "longitude"),
+                         lat=ncvar_get(nc, varid = "latitude")) %>% 
+                         {bind_cols(.,data.frame(sst=as.vector(ncvar_get(nc,"analysed_sst"))))} %>% 
+    mutate(sst=ifelse(sst<(-2),NA,sst))
+  nc_close(nc)
+  negdf <- bind_rows(tempneg,negdf)
+  }
+})
