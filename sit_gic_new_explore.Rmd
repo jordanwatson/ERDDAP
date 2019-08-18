@@ -1,0 +1,601 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+library(tidyverse)
+source("Spatial_indicators_functions_Woillez2009_modified.R")
+```
+
+
+```{r, eval=F}
+sst <- readRDS("Data/temperature_data.RDS") %>% 
+  inner_join(readRDS("Data/spatial_data.RDS"))
+
+bering <- as.character(c(514,524,508,512,516,509,513,517,521))
+
+sst2 <- sst %>% 
+  filter(!is.na(NMFSAREA)) %>% 
+  mutate(region=ifelse((NMFSAREA%in%bering) & maxlat>60.1 & maxlat<65.6,"NBS",
+                       ifelse((NMFSAREA%in%bering) & maxlat<=60.1,"EBS",
+                              ifelse(NMFSAREA%in%c(610),"WGOA",
+                                     ifelse(NMFSAREA%in%c(620,630),"CGOA",
+                                            ifelse(NMFSAREA%in%c(640,650),"EGOA","OTHER"))))),
+         moday=substr(as.character(date),6,10)) %>% 
+  dplyr::select(-c(STATEFED,sst.sd,m.depth,sd.depth)) %>% 
+  inner_join(readRDS("Data/Stat_Centroid.RDS") %>% 
+               mutate(STAT_AREA=as.character(STAT_AREA))) %>% 
+  mutate(year=format(date,"%Y"))
+
+saveRDS(sst2,file="Data/temperature_data_spatdat.RDS")
+```
+
+Read in the data. 
+1) Get rid of areas outside of the Alaska fisherhy management areas.
+2) Create a new SST field with positive values only. The coldest value is set at -1.8 so add an offset of 1.8 to this adjusted field. This is helpful for the Inertia calculation which gets thrown off by negatives. Given that the sst value for inertia is only used as a relative weighting factor it doesn't matter what the actual number is for that part. 
+
+```{r}
+sst <- readRDS("Data/temperature_data_spatdat.RDS") %>% 
+  filter(region!="OTHER") %>% 
+  mutate(sstadj=sst.mean+1.8)
+
+head(sst)
+```
+
+Let's just explore some general trends in the sst data for each region first. We begin with calculating the daily average of sst across all stat areas within each region. The GAM smoother has a cyclic spline to account for the period nature of the time series.
+
+```{r daily_avg_sst_region,fig.cap="Average daily SST across each region with a GAM smoother"}
+meandat <- sst %>% 
+  group_by(region,date) %>% 
+  summarise(mymean=mean(sst.mean,na.rm=TRUE)) %>% 
+  ungroup %>% 
+  group_by(region) %>% 
+  mutate(index=1:n()) %>% 
+  dplyr::select(region,index,mymean) 
+
+meandat %>% 
+  ggplot(aes(index,mymean)) + 
+  geom_line() + 
+  geom_smooth(formula = y ~ s(x, bs = "cc")) + 
+  facet_wrap(~region)
+```
+
+Stack the smoothing splines for each region.
+
+```{r}
+meandat %>% 
+  ggplot(aes(index,mymean,color=region)) + 
+  geom_smooth(formula = y ~ s(x, bs = "cc")) 
+```
+
+Or if we used linear smoothers for each region and plotted the slopes of those smoothers to compare regional warming, we get the following. The x-axis here represents years and shows an average warming of 1 degree C in 10 - 18 or so years, depending on the region. The EBS actually has a greater slope with 9.9 degrees per 100 years versus 8.9 for the NBS.
+
+```{r}
+meandat %>% 
+  group_by(region) %>% 
+  do(tidy(lm(mymean~index,data=.))) %>% 
+  filter(term!="(Intercept)") %>% 
+  mutate(annualincrease=estimate*365) %>% 
+  ggplot() + 
+  geom_abline(aes(slope=annualincrease,intercept=0,color=region)) + 
+  ylim(0,1) + 
+  xlim(0,20)
+```
+
+Now look at the center of gravity of the ADFG stat areas within each region, weighted by temperature. This is a relative metric to examine how the location of the thermal mass moves within and across years. The key is that each year has all of the same spatial coordinates. So if the temperature in a particular location is greater, it will increase the weight of the latitude and longitude at that location, thereby shifting the thermal mass in that direction. So if you see the center gravity move in a direction, that is the direction in which the warmer water is moving. 
+
+Note that for these calculations we have to use the temperature field with the 1.8 degree offset.
+
+```{r}
+mycgi <- sst %>% 
+  group_by(date,region) %>% 
+  do((cgi(x=.$x,y=.$y,z=.$sstadj) %>% data.frame)) %>% 
+  data.frame
+
+d1 <- mycgi %>% 
+  dplyr::select(date,region,xcg,ycg,I) %>% 
+  mutate(year=format(date,"%Y"),
+         month=as.numeric(format(date,"%m")))
+```
+
+Overlay the daily centers of gravity for each area with a gradient for year to see if anything jumps out. 
+
+```{r,fig.cap="Daily center of gravity across days and regions for all years"}
+d1 %>% 
+  filter(year<2019) %>% 
+  ggplot(aes(xcg,ycg,color=as.numeric(year))) + 
+  geom_point() + 
+  facet_wrap(~region,scales="free") + 
+  theme_bw() + 
+  theme(legend.position = c(0.8,0.25))
+```
+
+Now look at how the center of gravity shifts within a year for each area.
+
+Northern Bering Sea - generally counter-clockwise flow within each year. The biggest standout may be 2018 with it's very tight distribution, likely the result of an absence of sea ice. 
+
+```{r nbs_cgi,fig.cap="Daily center of gravity for the Northern Bering Sea management area"}
+d1 %>% 
+  filter(region=="NBS" & year<2019) %>% 
+  ggplot(aes(xcg,ycg,color=month)) + 
+  geom_point() + 
+  facet_wrap(~year,ncol=4) + 
+  theme_bw() + 
+  theme(legend.position = "top")
+```
+
+```{r}
+d1 %>% 
+  distinct() %>% 
+  group_by(region,year) %>% 
+  summarise(meanI=mean(I,na.rm=TRUE)) %>% 
+  ggplot(aes(year,meanI)) + 
+  geom_point() + 
+  geom_line() + 
+  facet_wrap(~region)
+```
+
+How does the inertia changes within and across years
+
+```{r}
+d1 %>% 
+  distinct() %>% 
+  group_by(region) %>% 
+  mutate(year=as.numeric(year),
+         index=1:n()) %>% 
+    ungroup %>% 
+  ggplot(aes(index,I)) + 
+  geom_line() + 
+  facet_wrap(~region)
+```
+
+
+
+```{r}
+d1 %>% 
+  distinct() %>% 
+  group_by(region) %>% 
+  mutate(year=as.numeric(year),
+         index=1:n()) %>% 
+    ungroup %>% 
+  ggplot(aes(index,I)) + 
+  geom_line() + 
+  facet_wrap(~region)
+```
+
+
+Eastern Bering Sea
+
+```{r ebs_cgi,fig.cap="Daily center of gravity for the Eastern Bering Sea management area"}
+d1 %>% 
+  filter(region=="EBS" & year<2019) %>% 
+  ggplot(aes(xcg,ycg,color=month)) + 
+  geom_point() + 
+  facet_wrap(~year,ncol=4) + 
+  theme_bw() + 
+  theme(legend.position = "top")
+```
+
+Western GOA
+
+```{r wgoa_cgi,fig.cap="Daily center of gravity for the western GOA management area"}
+d1 %>% 
+  filter(region=="WGOA" & year<2019) %>% 
+  ggplot(aes(xcg,ycg,color=month)) + 
+  geom_point() + 
+  facet_wrap(~year,ncol=4) + 
+  theme_bw() + 
+  theme(legend.position = "top")
+```
+
+Central GOA
+
+```{r cgoa_cgi,fig.cap="Daily center of gravity for the central GOA management area"}
+d1 %>% 
+  filter(region=="CGOA" & year<2019) %>% 
+  ggplot(aes(xcg,ycg,color=month)) + 
+  geom_point() + 
+  facet_wrap(~year,ncol=4) + 
+  theme_bw() + 
+  theme(legend.position = "top")
+```
+
+Eastern GOA
+
+```{r egoa_cgi,fig.cap="Daily center of gravity for the Eastern GOA management area"}
+d1 %>% 
+  filter(region=="EGOA" & year<2019) %>% 
+  ggplot(aes(xcg,ycg,color=month)) + 
+  geom_point() + 
+  facet_wrap(~year,ncol=4) + 
+  theme_bw() + 
+  theme(legend.position = "top")
+```
+
+
+```{r}
+cgiannual <- d1 %>% 
+  group_by(year,region) %>% 
+  do((cgi(x=.$xcg,y=.$ycg) %>% data.frame)) %>% 
+  data.frame
+
+
+
+
+#mycgifun <- function(mycgi){
+#  return(bind_cols(mycgi %>% 
+#            dplyr::select(year,xaxe1,xaxe2) %>% 
+#            gather(xaxis,xval,-c(year)) %>% 
+#            dplyr::select(-xaxis),
+#          mycgi %>% dplyr::select(year,yaxe1,yaxe2) %>% 
+#            gather(yaxis,yval,-year) %>% 
+#            dplyr::select(-yaxis,-year)))
+#}
+
+mycgifun <- function(mycgi){
+  return(bind_cols(mycgi %>% 
+                     dplyr::select(year,xaxe1,xaxe2,region) %>% 
+                     gather(xaxis,xval,-c(year,region)) %>% 
+                     dplyr::select(-xaxis),
+                   mycgi %>% dplyr::select(year,yaxe1,yaxe2,region) %>% 
+                     gather(yaxis,yval,-c(year,region)) %>% 
+                     dplyr::select(-yaxis,-year)))
+}
+
+mycgifun(cgiannual) %>% 
+filter(!is.nan(xval)) %>% 
+ggplot(aes(xval,yval,fill=factor(year))) +
+geom_mark_ellipse(expand = unit(0, "mm"),alpha=0.1) +
+facet_wrap(~region,scales="free") + 
+theme_bw()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+sst <- readRDS("Data/temperature_data_spatdat.RDS")
+
+modayvec <- unique(sst$moday[sst$year==2018])
+
+gic(x1=sst$x[sst$year==2018 & sst$moday=="01-01"],
+    y1=sst$y[sst$year==2018 & sst$moday=="01-01"],
+    z1=sst$sst.mean[sst$year==2018 & sst$moday=="01-01"],
+    x2=sst$x[sst$year!=2018 & sst$moday=="01-01"],
+    y2=sst$y[sst$year!=2018 & sst$moday=="01-01"],
+    z2=sst$sst.mean[sst$year!=2018 & sst$moday=="01-01"])
+
+
+str(sst)
+myyear <- 2018
+sstout <- sst %>% 
+  group_by(moday) %>% 
+  summarise(gic=gic(x1=x[year==myyear],
+                    y1=y[year==myyear],
+                    z1=sst.mean[year==myyear],
+                    x2=x[year!=myyear],
+                    y2=y[year!=myyear],
+                    z2=sst.mean[year!=myyear]))
+
+myyear <- 2003:2018
+myyear <- 2003:2004
+sstout <- list()
+for(i in 1:length(myyear)){
+  sstout[[i]] <- sst %>% 
+    group_by(moday) %>% 
+    summarise(gic=gic(x1=x[year==myyear[i]],
+                      y1=y[year==myyear[i]],
+                      z1=sst.mean[year==myyear[i]],
+                      x2=x[year!=myyear[i]],
+                      y2=y[year!=myyear[i]],
+                      z2=sst.mean[year!=myyear[i]]),
+              year=myyear[i])
+}
+
+sst.df <- sstout %>% 
+  bind_rows
+
+pdf("GIC_SST_Yearly_Differences.pdf")
+sst.df %>% 
+  group_by(year) %>% 
+  mutate(index=1:n()) %>% 
+  ggplot(aes(index,gic)) + 
+  geom_line() + 
+  facet_wrap(~year) + 
+  theme_bw() + 
+  theme(panel.grid = element_blank())
+dev.off()
+
+
+mycgi <- sst %>% 
+  group_by(date) %>% 
+  do((cgi(x=.$x,y=.$y,z=.$sst.mean) %>% data.frame)) %>% 
+  data.frame
+
+mycgi <- mycgi %>% 
+  mutate(year=format(date,"%Y"),
+         month=format(date,"%m"))
+
+mycgi %>% 
+  ggplot(aes(date,ycg)) + 
+  geom_line() 
+
+mymean <- mycgi %>% 
+  filter(year!=2019) %>% 
+  summarise(meanx=mean(xcg),
+            meany=mean(ycg))
+
+pdf("Daily_CG_SST.pdf",width=10.5,height=7.5)
+mycgi %>% 
+  filter(year!=2019) %>% 
+  ggplot(aes(xcg,ycg,color=factor(month))) + 
+  geom_point(size=0.7) + 
+  geom_vline(xintercept=mean(mycgi$xcg[mycgi$year!=2019]),linetype=2) + 
+  geom_hline(yintercept=mean(mycgi$ycg[mycgi$year!=2019]),linetype=2) + 
+  facet_wrap(~year) +
+  theme_bw() + 
+  theme(panel.grid = element_blank(),
+        legend.position="top") +
+        #legend.position=c(0.7,0.12)) +
+  guides(col=guide_legend(ncol=12)) + 
+  scale_color_discrete(name="Month") +
+  ggtitle("Center of gravity of daily SST values for Alaska statistical areas")
+dev.off()
+
+library(maps)
+
+#  Load world map with only Alaska
+world <- map_data("world",region="USA") %>% 
+  filter(subregion=="Alaska")
+
+pdf("Daily_CG_SST_map.pdf",width=10.5,height=7.5)
+ggplot() + 
+    geom_polygon(data=world,aes(long,lat,group=group),fill="grey")  +
+    geom_line(data=mycgi %>% filter(year!=2019),aes(xcg,ycg,color=factor(month)),size=0.7) + 
+    geom_vline(xintercept=mean(mycgi$xcg[mycgi$year!=2019]),linetype=2) + 
+    geom_hline(yintercept=mean(mycgi$ycg[mycgi$year!=2019]),linetype=2) + 
+    facet_wrap(~year) +
+    theme_bw() + 
+    theme(panel.grid = element_blank(),
+          legend.position="top") +
+    guides(col=guide_legend(ncol=12)) + 
+    scale_color_discrete(name="Month") + 
+    coord_quickmap(xlim=c(range(mycgi$xcg)),ylim=c(range(mycgi$ycg)))
+dev.off()  
+
+pdf("Daily_CG_SST_map_zoom_out.pdf",width=10.5,height=7.5)
+ggplot() + 
+  geom_polygon(data=world,aes(long,lat,group=group),fill="grey")  +
+  geom_line(data=mycgi %>% filter(year!=2019),aes(xcg,ycg,color=factor(month)),size=0.7) + 
+  geom_vline(xintercept=mean(mycgi$xcg[mycgi$year!=2019]),linetype=2) + 
+  geom_hline(yintercept=mean(mycgi$ycg[mycgi$year!=2019]),linetype=2) + 
+  facet_wrap(~year) +
+  theme_bw() + 
+  theme(panel.grid = element_blank(),
+        legend.position="top") +
+  guides(col=guide_legend(ncol=12)) + 
+  scale_color_discrete(name="Month") + 
+  coord_quickmap(xlim=c((min(mycgi$xcg)-3),(max(mycgi$xcg)+3)),ylim=c(52,60))
+dev.off()
+
+
+
+
+mycgi.yr <- sst %>% 
+  group_by(year) %>% 
+  do((cgi(x=.$x,y=.$y,z=.$sst.mean) %>% data.frame)) %>% 
+  data.frame
+
+mycgi.yr %>% 
+  filter(year!=2019) %>% 
+  ggplot(aes(xcg,ycg,label=factor(year))) +
+  geom_text()
+
+#-----------------------------------------------------------------------------------------------------------
+
+summary(sst2 %>% 
+  filter(region=="EBS" & date=="2017-03-31"))
+
+summary(sst2 %>% 
+          filter(region=="EBS" & date=="2015-03-31"))
+
+sst2 %>% 
+  filter(!is.na(sst.mean) & date=="2015-03-31") %>% 
+  do((cgi(x=.$x,y=.$y,z=.$sst.mean) %>% data.frame)) %>% 
+  data.frame
+
+summary(sst2$sst.mean[sst2$date=="2015-03-31"])
+summary(sst2$x[sst2$date=="2015-03-31"])
+summary(sst2$y[sst2$date=="2015-03-31"])
+
+summary(sst2$sst.mean[sst2$date=="2015-01-31"])
+summary(sst2$x[sst2$date=="2015-01-31"])
+summary(sst2$y[sst2$date=="2015-01-31"])
+
+mytest <- sst2 %>% 
+  filter(!is.na(sst.mean) & date=="2015-01-31")
+mytest$sst <- sst$sst.mean[!is.na(sst2$sst.mean) & sst2$date=="2015-03-31"]
+
+mytest %>% 
+  do((cgi(x=.$x,y=.$y,z=.$sst) %>% data.frame)) %>% 
+  data.frame
+
+sst2 %>% 
+  filter(!is.na(sst.mean) & date=="2015-03-31") %>%
+  ggplot(aes(sst.mean)) + 
+  geom_histogram()
+
+sst2 %>% 
+  filter(!is.na(sst.mean) & date=="2015-01-31") %>%
+  ggplot(aes(sst.mean)) + 
+  geom_histogram()
+
+
+
+sst2 %>% 
+  filter(!is.na(sst.mean) & date=="2015-01-31") %>% 
+  do((cgi(x=.$x,y=.$y,z=.$sst.mean) %>% data.frame)) %>% 
+  data.frame
+
+sst2 %>% 
+  filter(!is.na(sst.mean) & region=="EBS" & date=="2017-03-31") %>% 
+  do((cgi(x=.$x,y=.$y,z=.$sst.mean) %>% data.frame)) %>% 
+  data.frame
+
+
+
+
+ebs <- sst %>% 
+  filter(!is.na(sst.mean) & region=="EBS") %>% 
+  group_by(date) %>% 
+  do((cgi(x=.$x,y=.$y,z=.$sst.mean) %>% data.frame)) %>% 
+  data.frame
+
+ebs <- ebs %>% 
+  mutate(year=format(date,"%Y"),
+         month=format(date,"%m"))
+
+mycgi <- sst %>% 
+  filter(!is.na(sst.mean)) %>% 
+  group_by(date,region) %>% 
+  do((cgi(x=.$x,y=.$y,z=.$sst.mean) %>% data.frame)) %>% 
+  data.frame
+
+mycgi <- mycgi %>% 
+  mutate(year=format(date,"%Y"),
+         month=format(date,"%m"))
+
+mycgi %>% 
+  filter(ycg<90) %>% 
+  ggplot(aes(date,ycg)) + 
+  geom_line() +
+  facet_wrap(~region,scales="free")
+
+ebs %>% 
+  filter(ycg<90) %>% 
+  ggplot(aes(date,ycg)) + 
+  geom_line() +
+  facet_wrap(~region,scales="free")
+
+mymean <- mycgi %>% 
+  #filter(year!=2019) %>% 
+  summarise(meanx=mean(xcg),
+            meany=mean(ycg))
+
+
+mycgi %>% 
+  filter(region=="CGOA") %>% 
+  ggplot(aes(xcg,ycg,color=factor(month))) + 
+  geom_point(size=0.7) + 
+  geom_vline(xintercept=mean(mycgi$xcg[mycgi$region=="CGOA"]),linetype=2) + 
+  geom_hline(yintercept=mean(mycgi$ycg[mycgi$region=="CGOA"]),linetype=2) + 
+  facet_wrap(~year)
+
+mycgi %>% 
+  filter(region=="EGOA") %>% 
+  ggplot(aes(xcg,ycg,color=factor(month))) + 
+  geom_point(size=0.7) + 
+  geom_vline(xintercept=mean(mycgi$xcg[mycgi$region=="EGOA"]),linetype=2) + 
+  geom_hline(yintercept=mean(mycgi$ycg[mycgi$region=="EGOA"]),linetype=2) + 
+  facet_wrap(~year)
+
+mycgi %>% 
+  filter(region=="WGOA") %>% 
+  ggplot(aes(xcg,ycg,color=factor(month))) + 
+  geom_point(size=0.7) + 
+  geom_vline(xintercept=mean(mycgi$xcg[mycgi$region=="WGOA"]),linetype=2) + 
+  geom_hline(yintercept=mean(mycgi$ycg[mycgi$region=="WGOA"]),linetype=2) + 
+  facet_wrap(~year)
+
+
+
+
+
+pdf("Daily_CG_SST.pdf",width=10.5,height=7.5)
+mycgi %>% 
+  filter(year!=2019) %>% 
+  ggplot(aes(xcg,ycg,color=factor(month))) + 
+  geom_point(size=0.7) + 
+  geom_vline(xintercept=mean(mycgi$xcg[mycgi$year!=2019]),linetype=2) + 
+  geom_hline(yintercept=mean(mycgi$ycg[mycgi$year!=2019]),linetype=2) + 
+  facet_wrap(~year) +
+  theme_bw() + 
+  theme(panel.grid = element_blank(),
+        legend.position="top") +
+  #legend.position=c(0.7,0.12)) +
+  guides(col=guide_legend(ncol=12)) + 
+  scale_color_discrete(name="Month") +
+  ggtitle("Center of gravity of daily SST values for Alaska statistical areas")
+dev.off()
+
+library(maps)
+
+#  Load world map with only Alaska
+world <- map_data("world",region="USA") %>% 
+  filter(subregion=="Alaska")
+
+pdf("Daily_CG_SST_map.pdf",width=10.5,height=7.5)
+ggplot() + 
+  geom_polygon(data=world,aes(long,lat,group=group),fill="grey")  +
+  geom_line(data=mycgi %>% filter(year!=2019),aes(xcg,ycg,color=factor(month)),size=0.7) + 
+  geom_vline(xintercept=mean(mycgi$xcg[mycgi$year!=2019]),linetype=2) + 
+  geom_hline(yintercept=mean(mycgi$ycg[mycgi$year!=2019]),linetype=2) + 
+  facet_wrap(~year) +
+  theme_bw() + 
+  theme(panel.grid = element_blank(),
+        legend.position="top") +
+  guides(col=guide_legend(ncol=12)) + 
+  scale_color_discrete(name="Month") + 
+  coord_quickmap(xlim=c(range(mycgi$xcg)),ylim=c(range(mycgi$ycg)))
+dev.off()  
+
+pdf("Daily_CG_SST_map_zoom_out.pdf",width=10.5,height=7.5)
+ggplot() + 
+  geom_polygon(data=world,aes(long,lat,group=group),fill="grey")  +
+  geom_line(data=mycgi %>% filter(year!=2019),aes(xcg,ycg,color=factor(month)),size=0.7) + 
+  geom_vline(xintercept=mean(mycgi$xcg[mycgi$year!=2019]),linetype=2) + 
+  geom_hline(yintercept=mean(mycgi$ycg[mycgi$year!=2019]),linetype=2) + 
+  facet_wrap(~year) +
+  theme_bw() + 
+  theme(panel.grid = element_blank(),
+        legend.position="top") +
+  guides(col=guide_legend(ncol=12)) + 
+  scale_color_discrete(name="Month") + 
+  coord_quickmap(xlim=c((min(mycgi$xcg)-3),(max(mycgi$xcg)+3)),ylim=c(52,60))
+dev.off()
+
+
+
+
+mycgi.yr <- sst %>% 
+  group_by(year) %>% 
+  do((cgi(x=.$x,y=.$y,z=.$sst.mean) %>% data.frame)) %>% 
+  data.frame
+
+mycgi.yr %>% 
+  filter(year!=2019) %>% 
+  ggplot(aes(xcg,ycg,label=factor(year))) +
+  geom_text()
+
+
+
+
+
+
+
+
+```
+
